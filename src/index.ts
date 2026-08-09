@@ -116,6 +116,18 @@ async function routeApi(
   path: string,
   url: URL,
 ): Promise<Response> {
+  if (method === "POST" && path === "/api/auth/login") {
+    return login(request, env);
+  }
+
+  if (method === "POST" && path === "/api/auth/logout") {
+    return logout(request, env);
+  }
+
+  if (method === "GET" && path === "/api/auth/session") {
+    return getSession(request, env);
+  }
+
   if (method === "GET" && path === "/api/users") {
     return listUsers(env, url);
   }
@@ -206,13 +218,14 @@ async function routeApi(
     }
   }
 
-  match = path.match(/^\/api\/scores\/(\d+)$/);
+  match = path.match(/^\/api\/users\/(\d+)\/scores\/(\d+)$/);
 
   if (match) {
-    const scoreId = parseId(match[1]);
+    const userId = parseId(match[1]);
+    const scoreId = parseId(match[2]);
 
     if (method === "GET") {
-      return getScore(env, scoreId);
+      return getScore(env, userId, scoreId);
     }
 
     if (method === "PATCH") {
@@ -948,7 +961,7 @@ async function createScore(
 
   return json(
     {
-      data: await findScore(env, inserted.id),
+      data: await findScore(env, userId, inserted.id),
     },
     201,
   );
@@ -956,19 +969,21 @@ async function createScore(
 
 async function getScore(
   env: Env,
+  userId: number,
   scoreId: number,
 ): Promise<Response> {
   return json({
-    data: await findScore(env, scoreId),
+    data: await findScore(env, userId, scoreId),
   });
 }
 
 async function updateScore(
   request: Request,
   env: Env,
+  userId: number,
   scoreId: number,
 ): Promise<Response> {
-  const existing = await findScore(env, scoreId);
+  const existing = await findScore(env, userId, scoreId);
 
   const body = await readJson<{
     folderId?: number | null;
@@ -1047,16 +1062,17 @@ async function updateScore(
     .run();
 
   return json({
-    data: await findScore(env, scoreId),
+    data: await findScore(env, userId, scoreId),
   });
 }
 
 async function deleteScore(
   request: Request,
   env: Env,
+  userId: number,
   scoreId: number,
 ): Promise<Response> {
-  await findScore(env, scoreId);
+  await findScore(env, userId, scoreId);
 
   const body = await readOptionalJson<{
     permanent?: boolean;
@@ -1064,8 +1080,8 @@ async function deleteScore(
   }>(request);
 
   if (body.permanent === true) {
-    await env.DB.prepare("DELETE FROM user_scores WHERE id = ?")
-      .bind(scoreId)
+    await env.DB.prepare("DELETE FROM user_scores WHERE user_id = ? AND id = ?")
+      .bind(userId, scoreId)
       .run();
 
     return new Response(null, { status: 204 });
@@ -1075,6 +1091,26 @@ async function deleteScore(
     UPDATE user_scores
     SET
       status = 'deleted',
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
       modified_by = ?,
       modified_datetime = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE id = ?
@@ -1083,12 +1119,13 @@ async function deleteScore(
     .run();
 
   return json({
-    data: await findScore(env, scoreId),
+    data: await findScore(env, userId, scoreId),
   });
 }
 
 async function findScore(
   env: Env,
+  userId: number,
   scoreId: number,
 ): Promise<ScoreRow> {
   const score = await env.DB.prepare(`
@@ -1105,9 +1142,10 @@ async function findScore(
       modified_by,
       status
     FROM user_scores
-    WHERE id = ?
+    WHERE user_id = ?
+    AND id = ?
   `)
-    .bind(scoreId)
+    .bind(userId, scoreId)
     .first<ScoreRow>();
 
   if (!score) {
@@ -1447,4 +1485,175 @@ function throwD1ConstraintError(
   }
 
   throw error;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Authentication                                                             */
+/* -------------------------------------------------------------------------- */
+
+async function login(request: Request, env: Env): Promise<Response> {
+  const body = await readJson<{
+    username?: string;
+    email?: string;
+    passwordHash?: string;
+  }>(request);
+
+  const identifier = body.username || body.email;
+  if (!identifier) {
+    throw new HttpError(400, "username or email is required");
+  }
+
+  const passwordHash = requireText(body.passwordHash, "passwordHash", 512);
+
+  // Find user by username or email
+  const user = await env.DB.prepare(`
+    SELECT *
+    FROM users
+    WHERE (username = ? OR email = ?) AND status = 'active'
+  `)
+    .bind(identifier, identifier)
+    .first<{
+      id: number;
+      username: string;
+      email: string;
+      password_hash: string;
+      type: UserType;
+      created_datetime: string;
+      modified_datetime: string;
+      modified_by: number | null;
+      status: UserStatus;
+      avatar: number[] | null;
+    }>();
+
+  if (!user || user.password_hash !== passwordHash) {
+    throw new HttpError(401, "Invalid username, email, or password");
+  }
+
+  const token = crypto.randomUUID();
+  const expires = new Date();
+  expires.setDate(expires.getDate() + 7); // 7 days from now
+  const expiresDatetime = expires.toISOString();
+
+  await env.DB.prepare(`
+    INSERT INTO sessions (token, user_id, expires_datetime)
+    VALUES (?, ?, ?)
+  `)
+    .bind(token, user.id, expiresDatetime)
+    .run();
+
+  const serialized = {
+    id: user.id,
+    username: user.username,
+    email: user.email,
+    type: user.type,
+    createdDatetime: user.created_datetime,
+    modifiedDatetime: user.modified_datetime,
+    modifiedBy: user.modified_by,
+    status: user.status,
+    hasAvatar: user.avatar !== null,
+    avatarUrl: user.avatar !== null ? `/api/users/${user.id}/avatar` : null,
+  };
+
+  return json({
+    data: {
+      token,
+      expiresDatetime,
+      user: serialized,
+    },
+  });
+}
+
+async function logout(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const token = getSessionToken(request, url);
+
+  if (token) {
+    await env.DB.prepare("DELETE FROM sessions WHERE token = ?")
+      .bind(token)
+      .run();
+  }
+
+  return new Response(null, { status: 204 });
+}
+
+async function getSession(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const token = getSessionToken(request, url);
+
+  if (!token) {
+    throw new HttpError(401, "Authorization token is missing");
+  }
+
+  const session = await env.DB.prepare(`
+    SELECT s.token, s.expires_datetime, u.id, u.username, u.email, u.type, u.created_datetime, u.modified_datetime, u.modified_by, u.status, u.avatar
+    FROM sessions s
+    INNER JOIN users u ON s.user_id = u.id
+    WHERE s.token = ?
+  `)
+    .bind(token)
+    .first<{
+      token: string;
+      expires_datetime: string;
+      id: number;
+      username: string;
+      email: string;
+      type: UserType;
+      created_datetime: string;
+      modified_datetime: string;
+      modified_by: number | null;
+      status: UserStatus;
+      avatar: number[] | null;
+    }>();
+
+  if (!session) {
+    throw new HttpError(401, "Session not found");
+  }
+
+  // Check expiration
+  if (new Date(session.expires_datetime) < new Date()) {
+    // Delete expired session
+    await env.DB.prepare("DELETE FROM sessions WHERE token = ?")
+      .bind(token)
+      .run();
+    throw new HttpError(401, "Session has expired");
+  }
+
+  const serialized = {
+    id: session.id,
+    username: session.username,
+    email: session.email,
+    type: session.type,
+    createdDatetime: session.created_datetime,
+    modifiedDatetime: session.modified_datetime,
+    modifiedBy: session.modified_by,
+    status: session.status,
+    hasAvatar: session.avatar !== null,
+    avatarUrl: session.avatar !== null ? `/api/users/${session.id}/avatar` : null,
+  };
+
+  return json({
+    data: {
+      user: serialized,
+      expiresDatetime: session.expires_datetime,
+    },
+  });
+}
+
+function getSessionToken(request: Request, url: URL): string | null {
+  const authHeader = request.headers.get("Authorization");
+  if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
+    return authHeader.substring(7).trim();
+  }
+  const tokenParam = url.searchParams.get("token");
+  if (tokenParam) {
+    return tokenParam.trim();
+  }
+  const cookieHeader = request.headers.get("Cookie");
+  if (cookieHeader) {
+    const match = cookieHeader.match(/(?:^|;)\s*session_token\s*=\s*([^;]+)/);
+    if (match) {
+      return decodeURIComponent(match[1]);
+    }
+  }
+  return null;
 }
