@@ -229,11 +229,11 @@ async function routeApi(
     }
 
     if (method === "PATCH") {
-      return updateScore(request, env, scoreId);
+      return updateScore(request, env, userId, scoreId);
     }
 
     if (method === "DELETE") {
-      return deleteScore(request, env, scoreId);
+      return deleteScore(request, env, userId, scoreId);
     }
   }
 
