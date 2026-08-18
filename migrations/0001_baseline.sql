@@ -1,7 +1,5 @@
--- Enable foreign keys
-PRAGMA foreign_keys = ON;
+PRAGMA defer_foreign_keys = TRUE;
 
--- Users table
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT NOT NULL COLLATE NOCASE,
@@ -18,7 +16,6 @@ CREATE TABLE IF NOT EXISTS users (
   CONSTRAINT uq_users_email UNIQUE (email)
 );
 
--- Sessions table
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL,
@@ -27,7 +24,6 @@ CREATE TABLE IF NOT EXISTS sessions (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- Score folders table
 CREATE TABLE IF NOT EXISTS user_score_folders (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
@@ -39,7 +35,6 @@ CREATE TABLE IF NOT EXISTS user_score_folders (
   FOREIGN KEY (folder_parent) REFERENCES user_score_folders(id) ON DELETE CASCADE
 );
 
--- Scores table
 CREATE TABLE IF NOT EXISTS user_scores (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
@@ -56,7 +51,6 @@ CREATE TABLE IF NOT EXISTS user_scores (
   FOREIGN KEY (folder_id) REFERENCES user_score_folders(id) ON DELETE SET NULL
 );
 
--- Aggregate practice statistics per student and score
 CREATE TABLE IF NOT EXISTS student_score_stats (
   student_id TEXT NOT NULL,
   score_id TEXT NOT NULL,
